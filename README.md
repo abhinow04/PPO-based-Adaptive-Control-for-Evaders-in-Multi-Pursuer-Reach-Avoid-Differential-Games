@@ -216,9 +216,9 @@ If you use this code in academic work, please cite the base thesis:
 @thesis{mukundan2025pursuit,
   title={Pursuit -- Evasion Games},
   author={Mukundan, Abhinav},
-  year={2025},
-  school={SASTRA Deemed University},
-  type={B.Tech. Thesis}
+  year={2026},
+  school={University of Glasgow},
+  type={M.Sc. Thesis}
 }
 ```
 
