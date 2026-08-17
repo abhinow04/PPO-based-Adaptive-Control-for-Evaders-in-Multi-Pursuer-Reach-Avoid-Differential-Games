@@ -8,7 +8,7 @@ This project builds on prior work formalizing the *n*-pursuer, *m*-evader reach-
 
 ## Overview
 
-Two pursuers attempt to intercept a single evader before it reaches a stationary target. The classical differential game solution partitions the state space into a **pursuer-winning region** (`B > 0`) and an **evader-winning region** (`B ≤ 0`), where `B` is the barrier function computed from each pair's relative position and speed ratio. Classical closed-form control laws are optimal in each region — but only if both players execute them perfectly, which real deployed pursuers rarely do.
+The pursuit-evasion game involves two team - pursuers and evaders, where the evaders attempt to breach a given target while the pursuer attempt capture all the pursuers before they breach. The classical differential game solution partitions the state space into a **pursuer-winning region** (`B > 0`) and an **evader-winning region** (`B ≤ 0`), where `B` is the barrier function computed from each pair's relative position and speed ratio. Classical closed-form control laws are optimal in each region — but only if both players execute them perfectly, which real deployed pursuers rarely do.
 
 This project replaces the evader's behaviour with a **PPO (Proximal Policy Optimization)** policy, allowing it to learn adaptive evasive manoeuvres — turning, looping, timing crossings — that exploit the gap between theoretical optimality and practical pursuer implementations.
 
