@@ -1,59 +1,3 @@
-"""
-ppo.py
-------
-Proximal Policy Optimisation (PPO) controller for the evader, as described in
-the project plan (Sections 3 & 4).
-
-ACTION DESIGN
--------------
-The network does NOT output a raw velocity [vx, vy]. It outputs a single
-scalar "deroute multiplier" m in [-1, 1]. That multiplier is turned into an
-actual velocity by rotating the straight-line-to-target heading by an angle
-proportional to m:
-
-    heading = angle(target - evader_pos) + m * MAX_DETOUR_ANGLE
-
-m = 0  -> evader heads exactly at the target (the "original path").
-m = +1 -> evader turns up to MAX_DETOUR_ANGLE one way off that line.
-m = -1 -> turns the same amount the other way.
-
-This is exactly what the project asked for: the network's single output IS
-"how much (and which way) to deroute", not an arbitrary 2D vector, and the
-value it learns to output is entirely a function of what the reward system
-(Section 5: progress to target, safety margin from pursuers, terminal
-reward/penalty) rewards - i.e. it is the end result of all those reward
-factors combined into one interpretable number.
-
-Because it's a rotation (not an additive vector blend), a large multiplier
-can produce a genuinely sharp curve/loop around a pursuer - not capped at
-~90 degrees the way blending two fixed-length vectors would be.
-
-This is used by evader.py: whenever the barrier value B < 0 (i.e. the
-classical differential-game solution has already determined that the evader
-loses the pursuit), evader.return_velocity() hands control over to the PPO
-policy trained here instead of following the fixed losing trajectory.
-
-Contents
---------
-- ActorCritic            : shared-torso Gaussian policy + value network,
-                            1-dimensional bounded action (the multiplier)
-- RolloutBuffer          : stores on-policy trajectories for one PPO update
-- PPOAgent               : action selection + clipped-objective update
-- deviation_to_velocity  : the ONE place the multiplier -> velocity
-                            conversion happens, used identically by training
-                            (PursuitEvasionEnv.step) and inference
-                            (get_ppo_velocity), so the two can never drift
-                            out of sync with each other.
-- PursuitEvasionEnv      : 2-pursuer vs 1-evader training environment that
-                            reuses the *existing* classical pursuer controller
-                            (pursuer.py), with a curriculum that ramps
-                            pursuer speed and danger_radius up over training.
-- train()                : runs the PPO training loop across many randomised
-                            simulations and saves a checkpoint
-- PPOEvaderPolicy        : lightweight inference wrapper (loads a checkpoint
-                            once and is cached at module level)
-- get_ppo_velocity()     : convenience function called from evader.py
-"""
 
 import os
 import numpy as np
@@ -68,39 +12,24 @@ except ImportError:
 
 from pursuer import pursuer as ClassicalPursuer
 
-# --------------------------------------------------------------------------- #
-# Problem constants (Section 4 of the project plan)
-# --------------------------------------------------------------------------- #
+
 OBS_DIM = 8            # [xe, ye, xp1, yp1, xp2, yp2, xt, yt]
 ACT_DIM = 1             # [deroute_multiplier], bounded to [-1, 1]
 DEFAULT_CHECKPOINT = os.path.join(os.path.dirname(__file__), "ppo_evader.pth")
 
-# How far (in degrees) a multiplier of +/-1 is allowed to rotate the evader
-# off the straight line to the target. 160 deg allows near-full loops around
-# a pursuer while still leaving a small margin so it never moves in exactly
-# the wrong direction even at full deroute.
+
 MAX_DETOUR_ANGLE_DEG = 160.0
 MAX_DETOUR_ANGLE_RAD = np.deg2rad(MAX_DETOUR_ANGLE_DEG)
 
-# --------------------------------------------------------------------------- #
-# PPO / curriculum hyperparameters (tune here)
-# --------------------------------------------------------------------------- #
+
 ENTROPY_COEF_DEFAULT = 0.05
-# NOTE: the classical Apollonius-circle formulas in pursuer.py/evader.py
-# (alpha = evader_speed / pursuer_speed, terms like 1/(1-alpha**2)) are only
-# mathematically defined for alpha < 1, i.e. pursuer_speed > evader_speed.
-# CURRICULUM_START_SPEED must stay above the evader's speed (18) or alpha
-# passes through exactly 1 partway through training and the classical
-# controller divides by zero.
+
 CURRICULUM_START_SPEED = 20.0        # pursuer speed at episode 0 (must be > evader_speed=18)
 CURRICULUM_END_SPEED = 30.0          # pursuer speed at final episode
 CURRICULUM_START_RADIUS = 150.0      # danger radius at episode 0
 CURRICULUM_END_RADIUS = 80.0         # danger radius at final episode
 
 
-# --------------------------------------------------------------------------- #
-# Network
-# --------------------------------------------------------------------------- #
 if _TORCH_AVAILABLE:
 
     class ActorCritic(nn.Module):
@@ -119,9 +48,7 @@ if _TORCH_AVAILABLE:
                 nn.Linear(hidden, hidden), nn.Tanh(),
             )
             self.mean_head = nn.Linear(hidden, act_dim)
-            # log_std initialised for an action space of scale ~1 (the
-            # multiplier lives in [-1,1]), giving healthy exploration from
-            # the first rollout without needing a huge std.
+
             self.log_std = nn.Parameter(torch.ones(act_dim) * np.log(0.8))
             self.value_head = nn.Linear(hidden, 1)
 
@@ -149,9 +76,7 @@ if _TORCH_AVAILABLE:
             return log_prob, entropy, value
 
 
-# --------------------------------------------------------------------------- #
-# Rollout storage
-# --------------------------------------------------------------------------- #
+
 class RolloutBuffer:
     def __init__(self):
         self.obs, self.actions, self.log_probs = [], [], []
@@ -172,9 +97,7 @@ class RolloutBuffer:
         return len(self.obs)
 
 
-# --------------------------------------------------------------------------- #
-# PPO agent
-# --------------------------------------------------------------------------- #
+
 class PPOAgent:
     def __init__(self, obs_dim=OBS_DIM, act_dim=ACT_DIM, lr=3e-4,
                  gamma=0.99, lam=0.95, clip_eps=0.2,
@@ -202,11 +125,7 @@ class PPOAgent:
         with torch.no_grad():
             action, log_prob, value = self.net.act(obs_t, deterministic=deterministic)
         action_np = action.squeeze(0).cpu().numpy()
-        # The mean is already tanh-bounded to [-1,1], but a *sampled* action
-        # (mean + Gaussian noise) can still land slightly outside that range.
-        # Clip it here, and store this SAME clipped value in the training
-        # buffer (see train()) so what gets executed, what gets logged, and
-        # what the log-prob update is computed against are always identical.
+
         action_np = np.clip(action_np, -1.0, 1.0)
         log_prob_val = None if log_prob is None else log_prob.item()
         return action_np, log_prob_val, value.item()
@@ -247,7 +166,7 @@ class PPOAgent:
 
                 surr1 = ratio * advantages[mb_idx_t]
                 surr2 = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * advantages[mb_idx_t]
-                # L_CLIP = E[min(r_t(theta) * A_t, clip(r_t(theta), 1-eps, 1+eps) * A_t)]
+
                 policy_loss = -torch.min(surr1, surr2).mean()
 
                 value_loss = nn.functional.mse_loss(values, returns[mb_idx_t])
@@ -276,20 +195,10 @@ class PPOAgent:
         self.max_speed = checkpoint.get("max_speed", self.max_speed)
 
 
-# --------------------------------------------------------------------------- #
-# THE single place the multiplier becomes a velocity - used identically by
-# training (env.step) and inference (get_ppo_velocity).
-# --------------------------------------------------------------------------- #
+
 def deviation_to_velocity(deviation_multiplier, evader_pos, target_pos, speed,
                           pursuer_positions=None):
-    """
-    m = 0   -> straight at the target
-    m > 0   -> rotate away from the nearest pursuer (prioritize safety)
-    m < 0   -> rotate toward the target (prioritize progress)
-    
-    This makes the learned multiplier encode a safety-vs-progress tradeoff
-    rather than an arbitrary heading offset.
-    """
+
     evader_pos = np.asarray(evader_pos, dtype=np.float64).flatten()[:2]
     target_pos = np.asarray(target_pos, dtype=np.float64).flatten()[:2]
     m = float(np.clip(deviation_multiplier, -1.0, 1.0))
@@ -298,33 +207,25 @@ def deviation_to_velocity(deviation_multiplier, evader_pos, target_pos, speed,
     dist_to_target = np.linalg.norm(to_target)
     forward_angle = np.arctan2(to_target[1], to_target[0]) if dist_to_target > 1e-6 else 0.0
 
-    # The report uses two pursuers, but only the pursuer selected by the
-    # linear-program assignment is an active threat.  The other pursuer is a
-    # dummy/idle agent and must not steer the evader.
+
     if pursuer_positions is not None and len(pursuer_positions) > 0:
         active_pursuer = np.asarray(pursuer_positions[0])
         to_pursuer = active_pursuer - evader_pos
         away_angle = np.arctan2(to_pursuer[1], to_pursuer[0]) + np.pi  # opposite direction
 
-        # `away_angle` is the heading that points directly away from the pursuer.
-        # A positive multiplier should move the evader away from the pursuer, not
-        # toward it. Using the same rotation sign convention as the project docs:
-        #    m > 0 -> rotate away from pursuer, m < 0 -> rotate back toward target.
+
         heading = forward_angle + m * (away_angle - forward_angle)
     else:
-        # Fallback if no pursuer info: just rotate off the forward line
+
         heading = forward_angle + m * MAX_DETOUR_ANGLE_RAD
 
     return np.array([np.cos(heading), np.sin(heading)]) * speed
 
 
-# --------------------------------------------------------------------------- #
-# LP role assignment for the 2-pursuer / 1-evader report scenario
-# --------------------------------------------------------------------------- #
+
 def select_active_pursuer_lp(evader_pos, pursuer_positions, target,
                               evader_speed, pursuer_speed):
-    """Return the pursuer index selected by the same LP objective used in
-    assign.py. Exactly one pursuer is active; the other remains dummy/idle."""
+
     xe = np.asarray(evader_pos, dtype=float).flatten()[:2]
     ps = np.asarray(pursuer_positions, dtype=float).reshape(-1, 2)
     n = len(ps)
@@ -333,7 +234,7 @@ def select_active_pursuer_lp(evader_pos, pursuer_positions, target,
     nps = np.sum(ps ** 2, axis=1)
     B = nes - (alpha ** 2) * nps
 
-    # Same value expressions as assignment.val_mat() for m=1.
+
     dist = np.linalg.norm(ps - xe[None, :], axis=1)
     difference = xe[None, :] - ps
     dist2 = np.maximum(np.linalg.norm(difference, axis=1), 1e-12)
@@ -347,39 +248,15 @@ def select_active_pursuer_lp(evader_pos, pursuer_positions, target,
     idx3 = (B < 0) & (alpha <= 1)
     val[idx3] = -np.sqrt(nps[idx3]) + np.sqrt(nes) / alpha[idx3]
 
-    # assign.py uses a = val only for B >= 0 and alpha <= 1, then the LP
-    # maximises that objective subject to exactly one evader assignment.
+
     feasible = (B >= 0) & (alpha <= 1)
     objective = np.where(feasible, val, 0.0)
     return int(np.argmax(objective))
 
 
-# --------------------------------------------------------------------------- #
-# Training environment (2 pursuers vs 1 PPO evader, target at origin)
-# --------------------------------------------------------------------------- #
+
 class PursuitEvasionEnv:
-    """
-    Reproduces the scenario in Section 4 of the project plan:
-    - 2 pursuers using the existing differential-game controller (pursuer.py)
-    - 1 evader controlled by the PPO policy being trained (via the deroute
-      multiplier -> velocity conversion above)
-    - target fixed at the origin
-    - pursuers are faster than the evader, ramped up over a curriculum
 
-    Reward (Section 5, with adaptive safety weighting):
-        R = w_target * R_target + w_safety_eff * R_safety - step_penalty
-        R_target  = d_target[t-1]   - d_target[t]
-        R_safety  = d_pursuer[t]    - d_pursuer[t-1]      (nearest pursuer)
-        terminal  : +a on reaching target, -a on capture
-
-    w_safety_eff is NOT a fixed constant - it scales up smoothly as the
-    nearest pursuer gets closer than `danger_radius`, so the network learns
-    to output a larger deroute multiplier well before a pursuer is
-    dangerously close, and to relax back toward multiplier ~= 0 (straight to
-    target) once nothing is nearby. This reward shaping is the entire
-    mechanism that teaches the network what multiplier value to output -
-    there is no separate hand-coded switch for "when to deroute".
-    """
 
     def __init__(self, bounds=300.0, pursuer_speed=30.0, evader_speed=29.0,
                  capture_radius=5.0, target_radius=5.0, dt=0.1, max_steps=500,
@@ -405,14 +282,7 @@ class PursuitEvasionEnv:
         self.pursuers = [ClassicalPursuer(np.zeros(2), pursuer_speed, i) for i in range(2)]
 
     def reset(self, difficulty=1.0):
-        """
-        difficulty in [0, 1]. At difficulty=1 this reproduces the real
-        scenario (fully random start positions everywhere). At lower
-        difficulty, pursuers are kept at least `min_sep` away from the
-        evader's start position, giving a fresh policy a chance to learn
-        basic navigate-to-target / avoid-nearby-threat behaviour before
-        being thrown into worst-case starting configurations.
-        """
+
         self.t = 0
         self.evader_pos = np.random.uniform(-self.bounds, self.bounds, size=2)
         min_sep = self.bounds * 0.6 * (1.0 - np.clip(difficulty, 0.0, 1.0))
@@ -426,9 +296,7 @@ class PursuitEvasionEnv:
             p.status = 0
             p.reset_lock()
 
-        # Match assign.py: the LP assigns exactly ONE of the two pursuers to
-        # the single evader. That pursuer is active; the other is a dummy and
-        # remains stationary for the entire episode.
+
         self.active_pursuer_idx = select_active_pursuer_lp(
             self.evader_pos, [p.position for p in self.pursuers],
             self.target, self.evader_speed,
@@ -439,9 +307,7 @@ class PursuitEvasionEnv:
         return self._get_obs()
 
     def _active_pursuer_dist(self):
-        # assign.py's updateStatus() only ever checks the SPECIFIC assigned
-        # pursuer for capture, never "whichever pursuer is nearest" - the
-        # unassigned pursuer is not a threat at all, frozen or not.
+
         return np.linalg.norm(self.evader_pos - self.pursuers[self.active_pursuer_idx].position)
 
     def _nearest_pursuer_dist(self):
@@ -451,14 +317,10 @@ class PursuitEvasionEnv:
         alpha = self.evader_speed / p.speed
         return np.sum(self.evader_pos ** 2) - (alpha ** 2) * np.sum(p.position ** 2)
 
-# In ppo.py, PursuitEvasionEnv._get_obs():
+
 
     def _get_obs(self):
-        # Current (raw positions):
-        # p0, p1 = self.pursuers[0].position, self.pursuers[1].position
-        # return np.array([...evader_pos..., p0[0], p0[1], p1[0], p1[1], ...])
 
-        # BETTER (relative vectors):
         p0 = self.pursuers[0].position - self.evader_pos  # vector FROM evader TO pursuer
         p1 = self.pursuers[1].position - self.evader_pos  # same
         target = self.target - self.evader_pos  # vector FROM evader TO target
@@ -484,12 +346,9 @@ class PursuitEvasionEnv:
             deviation_multiplier, self.evader_pos, self.target, self.evader_speed,
             pursuer_positions=[active_position])
 
-        # move evader
+
         self.evader_pos = self.evader_pos + self.dt * velocity
 
-        # Only the assigned/active pursuer moves - the other stays frozen
-        # for the whole episode, exactly matching assign.py's step(), where
-        # an unassigned pursuer's updatePos() is simply never called.
         evader_proxy = self._EvaderProxy(self.evader_pos, self.evader_speed)
         active = self.pursuers[self.active_pursuer_idx]
         B = self._barrier_value(active)
@@ -505,12 +364,7 @@ class PursuitEvasionEnv:
         danger = np.clip(1.0 - pursuer_dist / self.danger_radius, 0.0, 1.0)
         w_safety_eff = self.w_safety * (1.0 + self.max_safety_boost * danger)
 
-        # Direct shaping term: reward producing a large |multiplier| whenever
-        # danger is high, regardless of whether THIS step's distance delta
-        # happened to improve. Against a faster pursuer, r_safety can stay
-        # ambiguous/negative even while turning is the right call, since the
-        # pursuer keeps closing regardless - this term removes that
-        # ambiguity and gives an immediate, unmistakable "turn now" signal.
+ 
         turn_bonus = self.w_turn_bonus * danger * abs(deviation_multiplier)
 
         reward = self.w_target * r_target + w_safety_eff * r_safety - self.step_penalty + turn_bonus
@@ -538,9 +392,7 @@ class PursuitEvasionEnv:
         return self._get_obs(), reward, done, info
 
 
-# --------------------------------------------------------------------------- #
-# Training loop
-# --------------------------------------------------------------------------- #
+
 def train(num_episodes=2000, steps_per_update=2048, save_path=DEFAULT_CHECKPOINT,
           log_every=20, seed=0, warmup_episodes=400,
 
@@ -571,10 +423,10 @@ def train(num_episodes=2000, steps_per_update=2048, save_path=DEFAULT_CHECKPOINT
     ep_lengths = []
     ep_len = 0
 
-    # ── History tracking for the training-time analysis graphs ──────────────
-    episode_reward_history = []   # reward per completed episode
-    episode_outcome_history = []  # outcome string per completed episode
-    loss_history = []             # (episode_count_at_update, combined_loss)
+
+    episode_reward_history = []   
+    episode_outcome_history = []  
+    loss_history = []             
 
     collected = 0
     while episode_count < num_episodes:
@@ -768,7 +620,7 @@ def get_ppo_velocity(evader_pos, pursuers, target, max_speed,
 
     has_objects = len(pursuers) > 0 and hasattr(pursuers[0], "position")
     positions = [np.asarray(p.position if has_objects else p, dtype=np.float32).flatten()[:2] for p in pursuers]
-    # Preserve pursuer identity/order for the 8-D report observation.
+
     if len(positions) == 0:
         positions = [evader_pos.copy(), evader_pos.copy()]
     elif len(positions) == 1:
