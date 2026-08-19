@@ -8,9 +8,6 @@ class pursuer:
         self.status = 0
         self.self = 0
 
-    def reset_lock(self):
-        """Not used in continuous-tracking mode, kept for compatibility."""
-        pass
 
     def updatePos(self, position):
         position = np.array(position).flatten()[:2]
@@ -26,13 +23,12 @@ class pursuer:
         print("Pursuer position: ", self.position)
 
     def return_velocity(self, evader, B, tolerance):
-        """Continuously track the evader's live position every step.
-        Recompute heading each call based on current evader location."""
+
         alpha = evader.speed / self.speed
         xe = np.array(evader.position).flatten()
         xp = np.array(self.position).flatten()
 
-        # Head directly toward wherever the evader is right now
+
         direction = xe - xp
         norm = np.linalg.norm(direction)
         heading = direction / norm if norm > 1e-9 else np.zeros(2)
