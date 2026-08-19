@@ -40,8 +40,7 @@ class assignment:
 
     # ── Barrier region ────────────────────────────────────────────────────────
     def barrier_region(self):
-        # BUG 5 FIX: ||x||^2 = sum(x^2), not norm(x*x).
-        # np.linalg.norm(x*x, 2, 1) is the L2 norm of the squared components — wrong.
+
         nes = np.sum(self.eva_pos ** 2, axis=1)  # (m,)  = ||xe_j||^2
         nps = np.sum(self.pur_pos ** 2, axis=1)  # (n,)  = ||xp_i||^2
 
@@ -73,10 +72,7 @@ class assignment:
         alphasq      = self.alpha ** 2                  # (m, n)
         alpha_factor = self.alpha / (1 - alphasq)       # (m, n)
 
-        # BUG 2 FIX: first_term must stay (m, n).
-        # Original code used np.sqrt(np.sum(...)) with no axis= → collapsed to scalar.
-        # Correct: sum only over the spatial axis (axis=2).
-        #
+
         # cap[j, i, :] = xe_j - alpha[j,i]^2 * xp_i
         cap = (self.eva_pos[:, None, :]                          # (m, 1, 2)
                - alphasq[:, :, None] * self.pur_pos[None, :, :])  # (m, n, 2)
@@ -97,7 +93,7 @@ class assignment:
         idx    = (self.B >= 0) & (self.alpha <= 1)
         self.a = idx.astype(float) * self.val          # (m, n)
 
-        # BUG 4 FIX: removed hardcoded print(self.a[1]) which crashes when m == 1.
+
         print("Value matrix a:\n", self.a)
 
         self.linporgram()
@@ -106,15 +102,15 @@ class assignment:
     def linporgram(self):
 
 
-        f = self.a.T.flatten()  # (n*m,) — full objective, not just 2 elements
+        f = self.a.T.flatten()  
 
         b = np.ones([self.mpn, 1])
         A = np.zeros([self.mpn, self.mn])
 
-        # Each pursuer assigned to at most 1 evader: rows 0..n-1
+
         A[:self.n, :] = np.tile(np.eye(self.n), (1, self.m))
 
-        # Each evader assigned to at most 1 pursuer: rows n..n+m-1
+
         row_indices      = np.arange(self.n, self.n + self.m)
         col_start_indices = (row_indices - self.n) * self.n
         col_indices      = np.arange(self.n) + col_start_indices[:, np.newaxis]
@@ -175,10 +171,7 @@ class assignment:
         time_chunk = 1000
         pursuer_traj = np.zeros((self.n, time_chunk, 2))
         evader_traj  = np.zeros((self.m, time_chunk, 2))
-        # distance history: dist_to_pursuer[j, t] = distance from evader 0 to
-        # pursuer j at step t; dist_to_target[t] = distance from evader 0 to
-        # the target at step t. Assumes the single-evader case (self.m == 1),
-        # which matches this project's setup.
+
         dist_to_pursuer = np.zeros((self.n, time_chunk))
         dist_to_target  = np.zeros(time_chunk)
         multiplier_history = np.zeros(time_chunk)  # evolution of the deroute multiplier m
@@ -298,7 +291,7 @@ class assignment:
         T = pursuer_traj.shape[1]
         timesteps = np.arange(T)
 
-        # ---- 1. Evolution of m ----
+
         plt.figure("Evolution of m")
         plt.plot(timesteps, multiplier_history, color='purple', label="Deroute multiplier m")
         plt.xlabel("Time step")
@@ -307,12 +300,12 @@ class assignment:
         plt.legend()
         plt.grid(True)
 
-        # ---- helper: velocity / speed / heading from a position trajectory ----
+
         def velocities(traj):
-            # traj: (T, 2) -> (T-1, 2) finite-difference velocity
+
             return np.diff(traj, axis=0) / dt
 
-        # Compute headings for pursuers and evader (needed for angular velocity)
+
         pursuer_headings = []
         for j in range(self.n):
             vel = velocities(pursuer_traj[j])
@@ -321,11 +314,11 @@ class assignment:
         vel_e = velocities(evader_traj[0])
         evader_heading = np.arctan2(vel_e[:, 1], vel_e[:, 0])
 
-        # ---- 2. Angular velocity of the agents ----
+
         plt.figure("Angular Velocity")
 
         def angular_velocity(heading):
-            # unwrap to avoid +/-pi wraparound spikes, then finite-difference
+
             unwrapped = np.unwrap(heading)
             return np.diff(unwrapped) / dt
 
@@ -356,7 +349,7 @@ class assignment:
 
 
 
-    # ── Step ──────────────────────────────────────────────────────────────────
+
     def step(self):
         self.updateStatus()
         print("Step: Updating positions")
@@ -390,16 +383,10 @@ class assignment:
         return False
 
 
-# ── Batch trials: win rate over time (across many games) ───────────────────
+
 def run_batch_trials(num_trials=100, n=2, m=1, bounds=300, target_bound=200,
                       pur_speed=30, eva_speed=18, seed=0):
-    """
-    A single game only has one outcome (win/loss) - there's no 'rate' within
-    one run. This runs many independent games headlessly (no live plotting)
-    and produces a scatter of each trial's outcome (1=win, 0=loss) against
-    trial number, with a rolling win-rate line overlaid, titled and
-    legended, to show how win rate evolves across repeated trials.
-    """
+
     rng = np.random.default_rng(seed)
     outcomes = []
 
